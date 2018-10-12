@@ -343,7 +343,7 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
             middle_block_rate = 1
             exit_block_rates = (1, 2)
             atrous_rates = (6, 12, 18)
-
+        # Entry flow: 3 blocks
         x = Conv2D(32, (3, 3), strides=(2, 2),
                    name='entry_flow_conv1_1', use_bias=False, padding='same')(img_input)
         x = BatchNormalization(name='entry_flow_conv1_1_BN')(x)
@@ -356,6 +356,7 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
         x = _xception_block(x, [128, 128, 128], 'entry_flow_block1',
                             skip_connection_type='conv', stride=2,
                             depth_activation=False)
+        # save the output of the second entry layer / block under the variable skip1
         x, skip1 = _xception_block(x, [256, 256, 256], 'entry_flow_block2',
                                    skip_connection_type='conv', stride=2,
                                    depth_activation=False, return_skip=True)
@@ -363,11 +364,12 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
         x = _xception_block(x, [728, 728, 728], 'entry_flow_block3',
                             skip_connection_type='conv', stride=entry_block3_stride,
                             depth_activation=False)
+        # Middle flow: 16 replications
         for i in range(16):
             x = _xception_block(x, [728, 728, 728], 'middle_flow_unit_{}'.format(i + 1),
                                 skip_connection_type='sum', stride=1, rate=middle_block_rate,
                                 depth_activation=False)
-
+        # Exit flow: 2 blocks
         x = _xception_block(x, [728, 1024, 1024], 'exit_flow_block1',
                             skip_connection_type='conv', stride=1, rate=exit_block_rates[0],
                             depth_activation=False)
@@ -375,7 +377,7 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
                             skip_connection_type='none', stride=1, rate=exit_block_rates[1],
                             depth_activation=True)
 
-    else:
+    else: # backbone = mobilenetv2
         OS = 8
         first_block_filters = _make_divisible(32 * alpha, 8)
         x = Conv2D(first_block_filters,
@@ -430,10 +432,11 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
 
     # end of feature extractor
 
-    # branching for Atrous Spatial Pyramid Pooling
+    # branching for Atrous Spatial Pyramid Pooling (ASPP)
 
     # Image Feature branch
     #out_shape = int(np.ceil(input_shape[0] / OS))
+    # b4 is updated maxpooling
     b4 = AveragePooling2D(pool_size=(int(np.ceil(input_shape[0] / OS)), int(np.ceil(input_shape[1] / OS))))(x)
     b4 = Conv2D(256, (1, 1), padding='same',
                 use_bias=False, name='image_pooling')(b4)
@@ -458,11 +461,11 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
         b3 = SepConv_BN(x, 256, 'aspp3',
                         rate=atrous_rates[2], depth_activation=True, epsilon=1e-5)
 
-        # concatenate ASPP branches & project
+        # concatenate ASPP branches & project :
         x = Concatenate()([b4, b0, b1, b2, b3])
-    else:
+    else: # backbone = mobilenetV2
         x = Concatenate()([b4, b0])
-
+    #
     x = Conv2D(256, (1, 1), padding='same',
                use_bias=False, name='concat_projection')(x)
     x = BatchNormalization(name='concat_projection_BN', epsilon=1e-5)(x)
@@ -473,7 +476,7 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
 
     if backbone == 'xception':
         # Feature projection
-        # x4 (x2) block
+        # x4 (x2) block, upsampling by a factor of 4
         x = BilinearUpsampling(output_size=(int(np.ceil(input_shape[0] / 4)),
                                             int(np.ceil(input_shape[1] / 4))))(x)
         dec_skip1 = Conv2D(48, (1, 1), padding='same',
@@ -492,8 +495,9 @@ def Deeplabv3(weights='pascal_voc', input_tensor=None, input_shape=(512, 512, 3)
         last_layer_name = 'logits_semantic'
     else:
         last_layer_name = 'custom_logits_semantic'
-
+    # number of output = classes
     x = Conv2D(classes, (1, 1), padding='same', name=last_layer_name)(x)
+    # upsample to get output with original input size
     x = BilinearUpsampling(output_size=(input_shape[0], input_shape[1]))(x)
 
     # Ensure that the model takes into account
